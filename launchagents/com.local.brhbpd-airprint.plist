@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.local.brhbpd-airprint</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/dns-sd</string>
+        <string>-R</string>
+        <string>DCP-T220-WiFi AirPrint</string>
+        <string>_ipp._tcp,_universal</string>
+        <string>local</string>
+        <string>631</string>
+        <string>txtvers=1</string>
+        <string>qtotal=1</string>
+        <string>rp=printers/DCP-T220-WiFi</string>
+        <string>ty=Brother DCP-T220</string>
+        <string>pdl=application/pdf,image/jpeg,image/png</string>
+        <string>URF=W8,SRGB24,CP1,RS300,DM1</string>
+        <string>Color=T</string>
+        <string>Duplex=F</string>
+        <string>TLS=1.2</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+</dict>
+</plist>
