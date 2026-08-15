@@ -103,6 +103,7 @@ flowchart LR
         direction TB
         bonjour["Bonjour advertisement<br/>'DCP-T220 WIFI'<br/>(dns-sd LaunchAgent)"]
         cups["CUPS shared queue<br/>DCP-T220-WiFi<br/>(listens on :631)"]
+        backend["brhbp CUPS backend<br/>reads print-color-mode<br/>(color vs B&W)"]
         daemon["brhbpd daemon<br/>(listens on 127.0.0.1:9101)<br/>runs forever, never sleeps"]
         usbq["CUPS raw queue<br/>DCP-T220 → usb://"]
     end
@@ -111,7 +112,8 @@ flowchart LR
 
     ios & droid & mac2 -->|"1. find printer"| bonjour
     ios & droid & mac2 -->|"2. send job (PDF/JPEG)"| cups
-    cups -->|"3. stream over TCP"| daemon
+    cups -->|"3. run brhbp backend"| backend
+    backend -->|"4. mode hint + PDF"| daemon
     daemon -->|"6. raw bytes"| usbq
     usbq -->|"7. USB"| printer
 
@@ -131,30 +133,43 @@ sequenceDiagram
     participant U as CUPS raw queue<br/>DCP-T220
     participant P as Printer<br/>(USB)
 
-    C->>Q: IPP Print-Job over WiFi<br/>(a PDF, or JPEG/PNG)
+    participant B as brhbp backend<br/>(reads color choice)
+
+    C->>Q: IPP Print-Job over WiFi<br/>(PDF + print-color-mode:<br/>color OR monochrome from<br/>the dialog's B&W toggle)
     Note over Q: PPD says<br/>"application/pdf 0 -"<br/>= pass the PDF through
-    Q->>D: open TCP socket, stream PDF bytes,<br/>close = "job done"<br/>(JetDirect / AppSocket style)
-    Note over D: save stream to a temp .pdf
-    D->>F: cupsfilter -m image/pwg-raster<br/>ColorModel=RGB, Draft
-    F-->>D: PWG raster<br/>(sRGB, 24-bit, 300 dpi, A4)
-    Note over D: prepend the PJL header<br/>@PJL ENTER LANGUAGE=PWGRASTER<br/>append the PJL trailer<br/>(exact bytes copied from<br/>Brother's own Linux filter)
+    Q->>B: run backend with the job<br/>options (incl. color mode)
+    Note over B: parse print-color-mode<br/>color → "BRHBP1 color"<br/>mono  → "BRHBP1 mono"
+    B->>D: TCP :9101 — send the mode line,<br/>then stream the PDF, close
+    Note over D: save PDF to temp,<br/>read the mode hint
+    alt color job (photos)
+        D->>F: cupsfilter -m image/pwg-raster<br/>ColorModel=RGB, Draft
+        F-->>D: sRGB 24-bit raster
+        Note over D: PJL RENDERMODE=COLOR<br/>(~11 ppm)
+    else monochrome job (documents)
+        D->>F: cupsfilter -m image/pwg-raster<br/>ColorModel=Gray, Draft
+        F-->>D: 8-bit gray raster (1/3 the data)
+        Note over D: PJL RENDERMODE=GRAYSCALE<br/>black head only (~28 ppm)
+    end
+    Note over D: wrap in the PJL envelope<br/>@PJL ENTER LANGUAGE=PWGRASTER<br/>(bytes copied from Brother's<br/>own Linux filter)
     D->>U: lp -o raw  (send finished .prn)
     U->>P: raw bytes over USB
     P-->>P: printer sees valid<br/>vnd.brother-hbp → prints
-    Note over C,P: total time ~1–2 s for text,<br/>longer for full-page color
+    Note over C,P: B&W documents print at up to<br/>28 ppm; color photos stay in color
 ```
 
 Plain-English summary of the trick:
 
-1. The phone sends an ordinary **PDF** (that is what AirPrint does).
-2. Our CUPS queue does not try to "drive" the printer. Its only job is to hand
-   the raw PDF to our daemon over a plain TCP socket.
+1. The phone sends an ordinary **PDF** plus its color choice (that is what
+   AirPrint does).
+2. A small **CUPS backend** (`brhbp`) reads whether the job is color or B&W and
+   forwards the PDF to our daemon over a plain TCP socket, with a one-line hint.
 3. The daemon uses macOS's **own** `cupsfilter` to turn the PDF into **PWG
-   raster** — a standard bitmap format Apple already supports.
+   raster** — color (sRGB) or grayscale, matching the job. Grayscale prints on
+   the black head only, at the printer's full 28 ppm.
 4. The daemon wraps that bitmap in the short **PJL** text header the DCP-T220
-   insists on (`@PJL ENTER LANGUAGE=PWGRASTER`). Those exact header/trailer
-   bytes were lifted from the output of Brother's Linux driver, so the printer
-   can't tell the difference.
+   insists on (`@PJL ENTER LANGUAGE=PWGRASTER`, with `RENDERMODE=COLOR` or
+   `GRAYSCALE`). Those exact bytes were lifted from Brother's Linux driver, so
+   the printer can't tell the difference.
 5. The daemon sends the finished bytes to a second, raw CUPS queue that just
    pipes them down the USB cable.
 
@@ -175,6 +190,10 @@ flowchart TB
         r2["DCP-T220-WiFi.ppd<br/>(PDF-passthrough PPD<br/>for the shared queue)"]
     end
 
+    subgraph be["/usr/libexec/cups/backend/"]
+        bk["brhbp<br/>CUPS backend: reads the job's<br/>color mode, forwards to daemon<br/>(root:wheel 0755, as CUPS requires)"]
+    end
+
     subgraph agents["/Library/LaunchAgents/"]
         a1["com.local.brhbpd.plist<br/>starts the daemon under<br/><b>caffeinate -si</b> so the Mac<br/>never idle-sleeps while it runs;<br/>KeepAlive = auto-restart"]
         a2["com.local.brhbpd-airprint.plist<br/>runs dns-sd to advertise<br/>ONE AirPrint printer 'DCP-T220 WIFI'"]
@@ -188,6 +207,7 @@ flowchart TB
     pi["postinstall script (runs as root)<br/>• strip com.apple.quarantine<br/>• cupsctl --share-printers<br/>&nbsp;&nbsp;BrowseLocalProtocols=none<br/>&nbsp;&nbsp;(so only OUR one printer shows)<br/>• create the shared queue<br/>• load both LaunchAgents"]
 
     pi --> lib
+    pi --> be
     pi --> agents
     pi --> cupsq
 ```
@@ -256,31 +276,31 @@ that wires everything up on the target Mac.
 
 ---
 
-## Speed and quality
+## Speed and quality — color *and* fast B&W from one printer
 
-Inkjet print speed is decided almost entirely by the printer's **mechanical
-mode**, not by the computer. Two PJL settings in the daemon control it:
+Inkjet speed is set by the printer's **mechanical mode**, not the computer.
+Brother rates the DCP-T220 (draft) at **28 ppm in black & white** but only
+**11 ppm in color** — color is inherently ~2.5× slower because it uses all four
+ink heads instead of just the black one.
 
-| Setting | Values | Effect |
-|---------|--------|--------|
-| `PRINTQUALITY` | `DRAFT` (default), `NORMAL`, `HIGH` | Draft = fewest head passes = **fastest**. High = slowest, best detail. |
-| `RENDERMODE` | `COLOR` (default), `GRAYSCALE` | Grayscale uses only the black head — faster for text, but photos come out gray. |
+You don't have to choose once. This setup honors the **color choice in the print
+dialog on every job**, from a single printer:
 
-The default is **`PRINTQUALITY=DRAFT` + `RENDERMODE=COLOR`**: the fastest setting
-that still prints color, so documents fly and photos still look right. Data
-transfer over USB is not the bottleneck (conversion takes ~1 second); the print
-head is.
+| Print dialog | What happens | Speed |
+|--------------|--------------|-------|
+| **Black & White** turned on | `print-color-mode=monochrome` → gray raster + `RENDERMODE=GRAYSCALE`, black head only | up to **28 ppm** |
+| **Color** (default) | `print-color-mode=color` → sRGB raster + `RENDERMODE=COLOR` | up to **11 ppm** |
 
-To change it, edit the `PJL_HEADER` block near the top of
-`/Library/PrintServer/brhbp/brhbpd.py`, then restart the daemon:
+So: flip **Black & White** on in the Print dialog for documents and they fly at
+the printer's top rated speed; leave it off for photos and they print in full
+color. Quality is always `DRAFT` (fewest head passes) — the fastest quality
+tier, confirmed by Brother's own spec (draft 28/11 ppm vs normal 16/9 ppm).
 
-```bash
-sudo nano /Library/PrintServer/brhbp/brhbpd.py     # change DRAFT / COLOR lines
-launchctl kickstart -k gui/$(id -u)/com.local.brhbpd
-```
+- **iPhone/iPad:** in the Print sheet, expand options and toggle **Black & White**.
+- **Android:** choose **Black & White** / **Grayscale** in the print options.
+- **Mac:** the Print dialog's color/B&W control.
 
-For the fastest possible text printing, set `RENDERMODE=GRAYSCALE` too. For photo
-prints, set `PRINTQUALITY=HIGH` (and keep `COLOR`).
+28 ppm is the printer's hardware ceiling in draft — software cannot go faster.
 
 ---
 
@@ -291,6 +311,7 @@ sudo launchctl bootout gui/$(id -u)/com.local.brhbpd
 sudo launchctl bootout gui/$(id -u)/com.local.brhbpd-airprint
 sudo rm -f /Library/LaunchAgents/com.local.brhbpd*.plist
 sudo rm -rf /Library/PrintServer/brhbp
+sudo rm -f /usr/libexec/cups/backend/brhbp
 lpadmin -x DCP-T220-WiFi
 lpadmin -x DCP-T220
 ```

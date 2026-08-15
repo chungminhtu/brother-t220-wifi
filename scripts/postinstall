@@ -12,6 +12,10 @@ BASE=/Library/PrintServer/brhbp
 /usr/bin/xattr -dr com.apple.quarantine /Library/LaunchAgents/com.local.brhbpd*.plist 2>/dev/null || true
 /bin/chmod 755 "$BASE/brhbpd.py"
 
+# CUPS refuses backends that are group/world-writable; make it root:wheel 0755.
+/usr/sbin/chown root:wheel /usr/libexec/cups/backend/brhbp 2>/dev/null || true
+/bin/chmod 0755 /usr/libexec/cups/backend/brhbp 2>/dev/null || true
+
 # 2. Enable CUPS sharing; suppress CUPS's own Bonjour so there is exactly
 #    ONE advertised printer (our AirPrint record).
 /usr/sbin/cupsctl --share-printers BrowseLocalProtocols=none 2>/dev/null || true
@@ -19,7 +23,7 @@ BASE=/Library/PrintServer/brhbp
 # 3. Create the shared WiFi queue (PDF passthrough -> daemon on :9101).
 #    The raw USB queue is created lazily by the daemon when it first sees
 #    the printer, so install works even if the printer is unplugged now.
-/usr/sbin/lpadmin -p DCP-T220-WiFi -v socket://127.0.0.1:9101 \
+/usr/sbin/lpadmin -p DCP-T220-WiFi -v brhbp://127.0.0.1:9101 \
     -P "$BASE/DCP-T220-WiFi.ppd" -o PageSize=A4 \
     -o printer-error-policy=retry-job -o printer-is-shared=true -E 2>/dev/null || true
 

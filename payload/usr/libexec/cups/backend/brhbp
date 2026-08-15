@@ -1,0 +1,56 @@
+#!/usr/bin/env python3
+"""CUPS backend 'brhbp' — bridges a print job to the brhbpd daemon while
+preserving the color choice from the print dialog.
+
+CUPS calls a backend as:  brhbp job user title copies options [file]
+No args  -> print a discovery line and exit (CUPS device enumeration).
+
+We read print-color-mode / ColorModel from the options (argv[5]), decide
+color vs monochrome, connect to the daemon (127.0.0.1:9101), send a one
+line hint 'BRHBP1 color|mono', then stream the job (PDF). Monochrome jobs
+print on the black head only (~28 ppm vs 11 ppm color).
+"""
+import os, socket, sys
+
+DAEMON_HOST, DAEMON_PORT = "127.0.0.1", 9101
+
+
+def main():
+    # Device discovery: `brhbp` with no arguments.
+    if len(sys.argv) < 6:
+        print('network brhbp "Unknown" "DCP-T220 WIFI (brhbp)"')
+        return 0
+
+    options = sys.argv[5].lower()
+    mono = ("print-color-mode=monochrome" in options
+            or "print-color-mode=auto-monochrome" in options
+            or "colormodel=gray" in options
+            or "colormodel=kgray" in options
+            or "colormodel=black" in options
+            or "printcolormode=monochrome" in options)
+    mode = "mono" if mono else "color"
+
+    # Job data: a filename in argv[6], otherwise stdin.
+    if len(sys.argv) > 6:
+        data = open(sys.argv[6], "rb").read()
+    else:
+        data = sys.stdin.buffer.read()
+
+    for attempt in range(6):
+        try:
+            s = socket.create_connection((DAEMON_HOST, DAEMON_PORT), timeout=15)
+            s.sendall(f"BRHBP1 {mode}\n".encode() + data)
+            s.shutdown(socket.SHUT_WR)
+            s.close()
+            sys.stderr.write(f"INFO: brhbp sent job ({mode}, {len(data)} bytes)\n")
+            return 0
+        except OSError as e:
+            sys.stderr.write(f"INFO: brhbp retry {attempt}: {e}\n")
+            import time
+            time.sleep(3)
+    sys.stderr.write("ERROR: brhbp could not reach daemon on :9101\n")
+    return 1  # CUPS retries per printer-error-policy
+
+
+if __name__ == "__main__":
+    sys.exit(main())

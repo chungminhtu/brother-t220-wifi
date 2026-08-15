@@ -20,21 +20,22 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 RENDER_PPD = os.path.join(BASE, "render.ppd")
 LOG = os.path.expanduser("~/Library/Logs/brhbpd.log")
 
-# PJL envelope taken verbatim from Brother's own filter output.
-PJL_HEADER = (b"\x1b%-12345X@PJL \n"
-              b"@PJL SET PAPER=A4\n"
-              b"@PJL SET BORDERLESS=OFF\n"
-              b"@PJL SET JTTOPMARGIN=300\n"
-              b"@PJL SET JTBOTMARGIN=300\n"
-              b"@PJL SET JTLEFTMARGIN=300\n"
-              b"@PJL SET JTRIGHTMARGIN=300\n"
-              b"@PJL SET RENDERMODE=COLOR\n"
-              b"@PJL SET PRINTQUALITY=DRAFT\n"
-              b"@PJL SET DUPLEX=OFF\n"
-              b"@PJL SET MEDIATYPE=REGULAR\n"
-              b"@PJL SET SOURCETRAY=AUTO\n"
-              b"@PJL SET FIDELITY=TRUE\n"
-              b"@PJL ENTER LANGUAGE=PWGRASTER\n")
+# PJL envelope taken verbatim from Brother's own filter output. {rendermode}
+# is filled per job: COLOR (photos) or GRAYSCALE (fast B&W, ~28 ppm vs 11).
+PJL_TEMPLATE = ("\x1b%-12345X@PJL \n"
+                "@PJL SET PAPER=A4\n"
+                "@PJL SET BORDERLESS=OFF\n"
+                "@PJL SET JTTOPMARGIN=300\n"
+                "@PJL SET JTBOTMARGIN=300\n"
+                "@PJL SET JTLEFTMARGIN=300\n"
+                "@PJL SET JTRIGHTMARGIN=300\n"
+                "@PJL SET RENDERMODE={rendermode}\n"
+                "@PJL SET PRINTQUALITY=DRAFT\n"
+                "@PJL SET DUPLEX=OFF\n"
+                "@PJL SET MEDIATYPE=REGULAR\n"
+                "@PJL SET SOURCETRAY=AUTO\n"
+                "@PJL SET FIDELITY=TRUE\n"
+                "@PJL ENTER LANGUAGE=PWGRASTER\n")
 PJL_TRAILER = b"\x1b%-12345X\x1b%-12345X"
 
 
@@ -60,33 +61,54 @@ def ensure_usb_queue():
     return False
 
 
-def handle(conn):
+def read_job(conn):
+    """Read one job. Optional first line 'BRHBP1 <color|mono>\\n' from our
+    CUPS backend sets the color mode; anything else (a bare PDF) = color."""
+    buf = b""
+    while b"\n" not in buf and len(buf) < 64:
+        chunk = conn.recv(64 - len(buf))
+        if not chunk:
+            break
+        buf += chunk
+    mode = "color"
+    if buf.startswith(b"BRHBP1 "):
+        line, _, rest = buf.partition(b"\n")
+        mode = "mono" if b"mono" in line else "color"
+        buf = rest
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as fin:
-        total = 0
+        fin.write(buf)
+        total = len(buf)
         while True:
             chunk = conn.recv(65536)
             if not chunk:
                 break
             fin.write(chunk)
             total += len(chunk)
-        pdfname = fin.name
-    log(f"job received: {total} bytes")
+        return fin.name, total, mode
+
+
+def handle(conn):
+    pdfname, total, mode = read_job(conn)
+    log(f"job received: {total} bytes, mode={mode}")
     if total == 0:
         os.unlink(pdfname)
         return
     prnname = pdfname + ".prn"
     try:
+        colormodel = "Gray" if mode == "mono" else "RGB"
+        rendermode = "GRAYSCALE" if mode == "mono" else "COLOR"
         r = subprocess.run(
             ["/usr/sbin/cupsfilter", "-p", RENDER_PPD, "-m", "image/pwg-raster",
-             "-o", "ColorModel=RGB", "-o", "cupsPrintQuality=Draft", pdfname],
+             "-o", f"ColorModel={colormodel}", "-o", "cupsPrintQuality=Draft", pdfname],
             capture_output=True, timeout=300)
         pwg = r.stdout
         i = pwg.find(b"RaS2")
         if r.returncode != 0 or i < 0:
             log(f"convert FAILED rc={r.returncode} err={r.stderr[-300:]!r}")
             return
+        pjl_header = PJL_TEMPLATE.format(rendermode=rendermode).encode()
         with open(prnname, "wb") as f:
-            f.write(PJL_HEADER + pwg[i:] + PJL_TRAILER)
+            f.write(pjl_header + pwg[i:] + PJL_TRAILER)
         log(f"converted: {os.path.getsize(prnname)} bytes PJL+PWG")
         ensure_usb_queue()
         r2 = subprocess.run(["/usr/bin/lp", "-d", USB_QUEUE, "-o", "raw", prnname],
