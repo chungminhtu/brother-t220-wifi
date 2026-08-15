@@ -1,0 +1,33 @@
+#!/bin/bash
+# Runs as root at pkg install time. Sets up the docker-free WiFi print
+# server: strips quarantine, creates CUPS queues, loads LaunchAgents for
+# the console user so they start now and every login.
+set -uo pipefail
+
+BASE=/Library/PrintServer/brhbp
+
+# 1. Strip Apple quarantine from everything we ship (belt and suspenders;
+#    a pkg payload is normally unquarantined, but user asked explicitly).
+/usr/bin/xattr -dr com.apple.quarantine "$BASE" 2>/dev/null || true
+/usr/bin/xattr -dr com.apple.quarantine /Library/LaunchAgents/com.local.brhbpd*.plist 2>/dev/null || true
+/bin/chmod 755 "$BASE/brhbpd.py"
+
+# 2. Enable CUPS sharing; suppress CUPS's own Bonjour so there is exactly
+#    ONE advertised printer (our AirPrint record).
+/usr/sbin/cupsctl --share-printers BrowseLocalProtocols=none 2>/dev/null || true
+
+# 3. Create the shared WiFi queue (PDF passthrough -> daemon on :9101).
+#    The raw USB queue is created lazily by the daemon when it first sees
+#    the printer, so install works even if the printer is unplugged now.
+/usr/sbin/lpadmin -p DCP-T220-WiFi -v socket://127.0.0.1:9101 \
+    -P "$BASE/DCP-T220-WiFi.ppd" -o PageSize=A4 \
+    -o printer-error-policy=retry-job -o printer-is-shared=true -E 2>/dev/null || true
+
+# 4. Load LaunchAgents into the console user's GUI session (now + every login).
+UID_NUM=$(/usr/bin/stat -f %u /dev/console)
+for label in com.local.brhbpd com.local.brhbpd-airprint; do
+    /bin/launchctl bootout "gui/$UID_NUM/$label" 2>/dev/null || true
+    /bin/launchctl bootstrap "gui/$UID_NUM" "/Library/LaunchAgents/$label.plist" 2>/dev/null || true
+done
+
+exit 0

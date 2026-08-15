@@ -1,3 +1,5 @@
-dist/
+build/
 *.dmg
+dist/
 .DS_Store
+*.log

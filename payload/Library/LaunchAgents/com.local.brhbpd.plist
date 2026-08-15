@@ -6,14 +6,14 @@
     <string>com.local.brhbpd</string>
     <key>ProgramArguments</key>
     <array>
+        <string>/usr/bin/caffeinate</string>
+        <string>-si</string>
         <string>/usr/bin/python3</string>
-        <string>__HOME__/.local/brhbp/brhbpd.py</string>
+        <string>/Library/PrintServer/brhbp/brhbpd.py</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
-    <key>StandardErrorPath</key>
-    <string>__HOME__/.local/brhbp/brhbpd.err</string>
 </dict>
 </plist>

@@ -8,14 +8,14 @@
     <array>
         <string>/usr/bin/dns-sd</string>
         <string>-R</string>
-        <string>DCP-T220-WiFi AirPrint</string>
+        <string>DCP-T220 WIFI</string>
         <string>_ipp._tcp,_universal</string>
         <string>local</string>
         <string>631</string>
         <string>txtvers=1</string>
         <string>qtotal=1</string>
         <string>rp=printers/DCP-T220-WiFi</string>
-        <string>ty=Brother DCP-T220</string>
+        <string>ty=DCP-T220 WIFI</string>
         <string>pdl=application/pdf,image/jpeg,image/png</string>
         <string>URF=W8,SRGB24,CP1,RS300,DM1</string>
         <string>Color=T</string>
