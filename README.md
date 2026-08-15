@@ -256,6 +256,34 @@ that wires everything up on the target Mac.
 
 ---
 
+## Speed and quality
+
+Inkjet print speed is decided almost entirely by the printer's **mechanical
+mode**, not by the computer. Two PJL settings in the daemon control it:
+
+| Setting | Values | Effect |
+|---------|--------|--------|
+| `PRINTQUALITY` | `DRAFT` (default), `NORMAL`, `HIGH` | Draft = fewest head passes = **fastest**. High = slowest, best detail. |
+| `RENDERMODE` | `COLOR` (default), `GRAYSCALE` | Grayscale uses only the black head — faster for text, but photos come out gray. |
+
+The default is **`PRINTQUALITY=DRAFT` + `RENDERMODE=COLOR`**: the fastest setting
+that still prints color, so documents fly and photos still look right. Data
+transfer over USB is not the bottleneck (conversion takes ~1 second); the print
+head is.
+
+To change it, edit the `PJL_HEADER` block near the top of
+`/Library/PrintServer/brhbp/brhbpd.py`, then restart the daemon:
+
+```bash
+sudo nano /Library/PrintServer/brhbp/brhbpd.py     # change DRAFT / COLOR lines
+launchctl kickstart -k gui/$(id -u)/com.local.brhbpd
+```
+
+For the fastest possible text printing, set `RENDERMODE=GRAYSCALE` too. For photo
+prints, set `PRINTQUALITY=HIGH` (and keep `COLOR`).
+
+---
+
 ## Uninstall
 
 ```bash
